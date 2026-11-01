@@ -11,6 +11,40 @@
 
 ## 待发布
 
+### 批次 2026-11-02 00:40 · SnowLuma 连接诊断分状态化（0.7.20 后）
+<!-- release-batch: start=2026-11-02T00:15+08:00 end=2026-11-02T00:40+08:00 commits=(未提交) -->
+
+**覆盖提交**：本轮工作区改动（HEAD `ccab715` 之上，编辑会话未提交、未改版本）
+**建议**：patch → **0.7.21**
+
+**问题**：`plugins/surfcore/lib/index.js:1689-1704` 的连接诊断只有 `connected === true` 一个判据，
+否则只要 3000/3001 端口在听就报 `onebot-rejected` 并甩「多半是 accessToken 不匹配」——
+「桥接没起」「consoleToken 不对」都被误报成令牌问题；`index.js:681` 在 `bridgeStatus()` 整体失败时
+传空对象，也会落进同一条。提示方向还写反了：真正回 200 而非 101 的是 **wsUrl 指到 HTTP 口**。
+
+**修法**：
+- 新增纯函数 `plugins/surfcore/lib/snowluma-diagnose.js`：8 个状态各带 `code`/`error`/`hint`/`evidence`
+  （`ok` / `bridge-down` / `bridge-unauthorized` / `config-swapped` / `onebot-rejected` /
+  `ws-port-closed` / `needs-login` / `not-running`）；
+- `index.js` 只收集事实（整个 bridge 快照 + `httpUrl`/`wsUrl`/WebUI 三次端口探测），三个调用点
+  改成传整个 bridge；
+- `bridge-down` 明确写「跟 accessToken 无关」；`onebot-rejected` 改成「回 401 = 令牌不对；
+  回 200 = wsUrl 指到了 HTTP 口」并指向 `surfcore\state\bridge.log` 的 non-101/1006 行；
+- 新增 `plugins/surfcore/scripts/test-snowluma-diagnose.mjs`（11 组断言），已插入插件 `npm test` 链。
+
+**未做**：token 单一来源（`config.json` 与 SnowLuma `onebot_<QQ号>.json` 两份），留待发布会话评估；
+重启 DSH 后的真实界面文案未在编辑会话验证。
+
+**case**：[docs/cases/2026-11-02-snowluma-diagnosis-hint.md](cases/2026-11-02-snowluma-diagnosis-hint.md)
+**验证**：`node scripts/test-snowluma-diagnose.mjs`；`plugins/surfcore npm test` 全绿；
+`npm run test:regressions` 全通过；`npm run test:audit` 87/89（两个失败为既有问题：
+preset patch 与源不一致、本机音色引擎占用导致语音包导入测试失败）。
+**交接**：同步 `plugins/surfcore/lib/index.js`、`plugins/surfcore/lib/snowluma-diagnose.js`、
+`plugins/surfcore/scripts/test-snowluma-diagnose.mjs`、`plugins/surfcore/package.json`、docs、manifest；
+重启 DSH 后概览页与启动自检按真实状态给话（正常时无红字）。
+
+---
+
 ### 批次 2026-10-30 23:40 · 语音包退出 zip 自动更新（0.7.19 后）
 <!-- release-batch: start=2026-10-30T23:40+08:00 end=2026-10-30T23:50+08:00 commits=44bae2d -->
 

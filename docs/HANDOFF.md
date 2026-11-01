@@ -5,6 +5,46 @@
 
 ---
 
+## 快照：2026-11-02 00:15–00:40（SnowLuma 连接诊断分状态化）
+
+### 当前事实
+
+- **HEAD**：`ccab715 release: v0.7.20`（本次改动在其之上，尚未提交）
+- **package.json version**：`0.7.20`（编辑会话，未改版本、未打 tag）
+- **工作区**：改了 2 个、新增 2 个（`plugins/surfcore/lib/index.js`、`plugins/surfcore/package.json`、
+  `plugins/surfcore/lib/snowluma-diagnose.js`、`plugins/surfcore/scripts/test-snowluma-diagnose.mjs`）
+  + 文档（`docs/cases/2026-11-02-snowluma-diagnosis-hint.md`、cases README 一行、PITFALLS #92、本文件）。
+
+### 本次做了什么
+
+- 起因：用户报概览页/启动自检红字 `onebot-rejected`，但 QQ 收发正常。实测 `/api/status`
+  `connected:true`；四条 WS 握手探测证明 `ws://127.0.0.1:3000` 回 **200 而非 101**（才是
+  `non-101 status code` 的真凶），而 hint 把方向写成了「httpUrl 指到了 WebSocket 端口」。
+- 改法：判定抽成纯函数 `plugins/surfcore/lib/snowluma-diagnose.js`，8 个状态
+  （`ok`/`bridge-down`/`bridge-unauthorized`/`config-swapped`/`onebot-rejected`/`ws-port-closed`/
+  `needs-login`/`not-running`），各带 `code`/`error`/`hint`/`evidence`；`index.js` 只收集事实
+  （整个 bridge 快照 + 三次端口探测）。失败必须可见可行动（AGENTS §1.7）。
+- 新增 `plugins/surfcore/scripts/test-snowluma-diagnose.mjs`（11 组断言），已插入插件 `npm test` 链。
+
+### 验证状态
+
+- ✅ `plugins/surfcore npm test` 全绿；`npm run test:regressions` 全通过。
+- ⚠️ `npm run test:audit` **87/89**：`test-agent-preset-patches.mjs`（preset patch 与源不一致，
+  需跑 `node scripts/build-agent-preset-patches.mjs`）、`test-voice-pack-import.mjs`（本机音色引擎
+  在运行 → 「音色引擎仍在运行，不能覆盖」）。两者与本次改动无关，**未修**。
+- ❌ **没验证**：重启 DSH 后真实界面上的红字/弹窗文案（需重启宿主，用户在跑活）。
+
+### 下一步
+
+1. 用户同意时重启 DSH，确认概览页与启动自检文案（正常时应无红字；可临时把 `snowluma.wsUrl`
+   改指向 3000 复现 `config-swapped`）。
+2. 发布会话：定版本号 → 跑门禁 → tag → 归档（编辑会话不许做）。
+3. 押后：token 单一来源（运行时只读 SnowLuma 的 `onebot_<QQ号>.json`），需在发布会话评估。
+
+---
+
+
+
 ## 快照：2026-10-30 14:15–14:50（对齐 v0.7.18 现状）
 
 ### 当前事实

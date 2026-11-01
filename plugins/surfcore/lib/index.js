@@ -67,6 +67,7 @@ import { isLoopbackReq, json, readBody, sameOrigin } from './http-guard.js';
 import { startScheduler } from './scheduler.js';
 import { createTokenBudgetService } from './token-budget.js';
 import { scanPluginCompatibility } from './compat.js';
+import { decideSnowLumaDiagnosis, portOfUrl } from './snowluma-diagnose.js';
 import { createGateEventStore } from '../../../src/gate-events.js';
 import { createPetService, detectElectronPath, installElectronRuntime, ELECTRON_VERSION, electronDownloadUrl } from './pet.js';
 import { createPetChatService } from './pet-chat.js';
@@ -677,8 +678,9 @@ export function apply(ctx) {
       Promise.resolve(biliToQqStatus()),
       Promise.resolve(memoryStatus()),
     ]);
-    // SnowLuma 只报「未连接」没用：这里给出可执行的诊断（没启动 / 在登录页 / token 不对）。
-    const snowDiag = await diagnoseSnowLuma(bridge?.snowluma ?? {}).catch(() => ({ state: 'unknown', hint: '' }));
+    // SnowLuma 只报「未连接」没用：这里给出可执行的诊断（桥接没起 / 令牌不对 / 端口配反 / 在登录页 / 没启动）。
+    // 整个 bridge 状态都传进去：只有知道「桥接自己起没起」才分得清它和 token 的问题。
+    const snowDiag = await diagnoseSnowLuma(bridge ?? {}).catch(() => ({ state: 'unknown', code: 'snow.unknown', hint: '' }));
     const personaText = readTextFile(resolvePersonaFile());
     const mode = parseModeState();
     let dshMode = null;
@@ -1290,8 +1292,12 @@ export function apply(ctx) {
     const all = readAll();
     const qqCfg = readQqConfig().config ?? {};
     const snow = qqCfg.snowluma ?? {};
-    let snowState = { state: 'unknown', hint: '' };
-    try { snowState = await diagnoseSnowLuma(snow); } catch {}
+    let snowState = { state: 'unknown', code: 'snow.unknown', hint: '' };
+    try {
+      // 体检页也要分清「桥接没跑」和「token 不对」：先取一次桥接状态再判定。
+      const bridgeNow = await bridgeStatus().catch(() => ({}));
+      snowState = await diagnoseSnowLuma(bridgeNow);
+    } catch {}
     const bridgeSrc = path.join(QQBOT_ROOT, 'src', 'bridge.js');
     return buildInstallChecks({
       nodeVersion: process.versions.node,
@@ -1684,23 +1690,31 @@ export function apply(ctx) {
     }
   }
 
-  // SnowLuma 连不上时到底卡在哪一步：进程没起 / 停在登录页 / token 或端口不对。
-  // 桥接的 goodError 只有一句 fetch failed，光看它没法给用户任何可执行的信息。
-  async function diagnoseSnowLuma(bridgeSnow = {}) {
-    if (bridgeSnow.connected === true) return { state: 'ok', hint: '' };
+  // SnowLuma 连不上时到底卡在哪一步：桥接没起 / 控制台令牌不对 / 端口配反 /
+  // token 被拒 / 停在登录页 / 没运行。
+  // 判定本身在 snowluma-diagnose.js（纯函数，有测试）；这里只负责探端口和读配置。
+  // 2026-11-02 改：旧版把「桥接没起」也算成 token 不对，提示还把 wsUrl/httpUrl 的方向写反了。
+  async function diagnoseSnowLuma(bridge = {}) {
+    const snow = bridge?.snowluma ?? null;
+    if (snow?.connected === true) {
+      return { state: 'ok', code: 'snow.ok', error: '已连接', hint: '', level: 'ok', evidence: {} };
+    }
+    const cfg = readQqConfig().config?.snowluma ?? {};
     const webui = snowLumaWebui();
-    const onebot = (await portOpen(3000)) || (await portOpen(3001));
-    const webuiUp = await portOpen(webui.port);
-    if (onebot) {
-      return {
-        state: 'onebot-rejected',
-        hint: 'OneBot 端口在监听但桥接连不上：多半是 accessToken 不匹配（对齐 config.json 的 snowluma.accessToken），或 httpUrl 指到了 WebSocket 端口',
-      };
-    }
-    if (webuiUp) {
-      return { state: 'needs-login', hint: `SnowLuma 已启动但还没登录：打开 ${webui.url} 扫码/登录` };
-    }
-    return { state: 'not-running', hint: 'SnowLuma 没在运行：设置 → SurfCore → 概览 → 一键启动（会按需打开控制台）' };
+    const httpPort = portOfUrl(cfg.httpUrl) || 3000;
+    const wsPort = portOfUrl(cfg.wsUrl) || 3001;
+    const [httpOpen, wsOpen, webuiOpen] = await Promise.all([
+      portOpen(httpPort),
+      portOpen(wsPort),
+      portOpen(webui.port),
+    ]);
+    return decideSnowLumaDiagnosis({
+      bridge,
+      snow,
+      ports: { http: httpOpen, ws: wsOpen, webui: webuiOpen },
+      urls: { httpUrl: cfg.httpUrl, wsUrl: cfg.wsUrl },
+      webuiUrl: webui.url,
+    });
   }
 
   async function launchSnowLuma() {
@@ -1858,7 +1872,7 @@ export function apply(ctx) {
         } catch {}
         const bridge = last?.bridge ?? {};
         const snow = bridge.snowluma ?? {};
-        const snowDiag = await diagnoseSnowLuma(snow).catch(() => ({ state: 'unknown', hint: '' }));
+        const snowDiag = await diagnoseSnowLuma(bridge).catch(() => ({ state: 'unknown', code: 'snow.unknown', hint: '' }));
         pluginLog(`启动检查未通过：qq=${qq} bili=${bili} running=${Boolean(bridge.running)} dshReady=${Boolean(bridge.dshReady)} dshBaseUrl=${bridge.dshBaseUrl ?? '?'} snow=${Boolean(snow.connected)} snowState=${snowDiag.state} account=${Boolean(snow.accountOnline)} scheduler=${Boolean(last?.schedulerRunning)}`);
         showStartupPopup('SurfCore 启动状态', [
           '还没全部就绪：',

@@ -2973,3 +2973,37 @@ QQ 会话的 `qq-tool-restrict` 不认识这些工具，执行期拒绝。模型
 
 **验证**：`plugins/surfcore npm test`（test-updates-voice 钉住不再登记 surfvoice 组件 +
 语音页说明）；`npm run test:audit` 89/89。
+
+## #92（2026-11-02）连接诊断把「桥接没起」误报成令牌不对，提示方向还写反了
+
+**现象**：概览页/启动自检红字 `SnowLuma 连接异常（onebot-rejected）：… 多半是 accessToken
+不匹配，或 httpUrl 指到了 WebSocket 端口`，可用户 QQ 消息收发正常；`plugin.log` 里
+`启动检查未通过：… snowState=onebot-rejected account=true`（account=true 说明 HTTP+令牌当时是通的）。
+
+**根因**：
+- `plugins/surfcore/lib/index.js:1689-1704` 只有一个判据：`connected === true` 才 ok；否则
+  3000/3001 任一端口在听就返回 `onebot-rejected` + 固定 hint → 「桥接没起」「consoleToken
+  不对」这两种跟 accessToken 无关的情况都被说成令牌问题；
+- `index.js:681` 在 `bridgeStatus()` 整体失败时传 `bridge?.snowluma ?? {}`，空对象同样落进
+  onebot-rejected，提示与事实完全脱节；
+- hint 方向写反：真正的端口搞混是 **wsUrl 指到 HTTP 口**（HTTP 服务对 WS 握手回 200 而不是
+  101，桥接日志 `Received network error or non-101 status code.`），原文却写「httpUrl 指到了
+  WebSocket 端口」；
+- 这些 state 全仓库没有一个测试断言过（只在 10-31 那次 token 真过期时人工验证过）。
+
+**修法**：判定抽成无 IO 纯函数 `plugins/surfcore/lib/snowluma-diagnose.js`
+（`decideSnowLumaDiagnosis`），按 8 个状态返回 `{state, code, error, hint, level, evidence}`：
+`ok` → `bridge-down` → `bridge-unauthorized` → `config-swapped`（wsUrl 与 httpUrl 同端口）
+→ `onebot-rejected` → `ws-port-closed` → `needs-login` → `not-running`；`index.js` 只收集事实
+（整个 bridge 快照 + 三次端口探测 + WebUI 端口）。`bridge-down` 的提示明确写「跟 accessToken
+无关」；`onebot-rejected` 改成「回 401 = 令牌不对；回 200 = wsUrl 指到了 HTTP 口」并指向
+`surfcore\state\bridge.log` 里的 non-101/1006 行。
+
+**未做**：token 单一来源（`config.json` 与 SnowLuma `onebot_<QQ号>.json` 两份），押后到发布会话
+评估；重启 DSH 后的真实界面文案未在编辑会话内验证。
+
+**验证**：`node scripts/test-snowluma-diagnose.mjs`（11 组断言，8 条分支 code 互不重复、hint
+非空且含冒号、bridge-down 不许出现 accessToken、onebot-rejected 必须含 wsUrl 且不许出现旧文案）；
+`plugins/surfcore npm test` 全绿；`npm run test:regressions` 全通过；`npm run test:audit` 87/89
+（两个失败为既有问题：preset patch 与源不一致、本机音色引擎占用导致语音包导入测试失败）。
+
