@@ -11,6 +11,57 @@
 
 ## 待发布
 
+### 待发布 · 2026-11-02 02:52–03:05 · GIF 中间层（QQ 动图不再只剩首帧）
+<!-- release-batch: start=2026-11-02T02:52+08:00 end=2026-11-02T03:05+08:00 commits=c54a713 -->
+
+**覆盖提交**：`c54a713`（范围 `59ec306..c54a713`，分支 `feat/gif-middleware`）
+**建议**：**0.8.7**（patch：纯新增能力，默认开启但可用 `socialV2.gif.enabled=false` 一键回退，接口向后兼容）
+**当前版本**：`0.8.6`，未 bump / 未 tag / 未 push
+
+**可直接转发的交接块**：
+
+```
+改了哪些文件：
+  src/gif-middleware.js（新增）、src/mcp-snowluma-safe.js、
+  scripts/test-gif-middleware.mjs（新增）、scripts/test-audit.mjs、
+  scripts/test-qq-model-view.mjs、config.example.json、
+  docs/cases/2026-11-02-gif-middleware.md、docs/cases/README.md、
+  docs/PITFALLS.md（#101）、docs/HANDOFF.md、docs/RELEASE-QUEUE.md
+
+测过什么、结果如何：
+  node scripts/test-gif-middleware.mjs  → 通过（解码/采样/渲染/缓存 + 6 条 fail-open）
+  node scripts/test-qq-model-view.mjs   → 8/8 通过
+  node scripts/test-mcp-safe.mjs        → 通过（35 个工具）
+  node scripts/test-audit.mjs           → 107/109（2 条既有失败与本次无关：
+                                          test-agent-preset-patches 的 preset patch drift、
+                                          test-voice-pack-import 因本机音色引擎在占坑）
+  npm run test:regressions              → R1–R16 全 PASS
+
+建议 patch 还是 minor：patch（0.8.7）
+
+case 文档路径：docs/cases/2026-11-02-gif-middleware.md
+
+改动层级：实现层（新增一个交付前的图片处理步骤）+ 工具描述文案；
+接口未变（仍是 {type:'image', mimeType, data}），旧调用方不受影响。
+
+完整逻辑与爆炸半径：见 case「完整逻辑」段——桥接 → MCP → 宿主三段里，只动 MCP 这一段，
+把动图在进 DSH 之前折叠成一张 16 帧 4×4 胶片条 JPEG（每格长边 240），中间帧不落盘。
+爆炸半径：1 个进程（MCP server）× 4 个出图点；失败一律退回首帧，不阻断消息。
+开关键 socialV2.gif.enabled（false = 完全回到旧行为）。
+
+失败路径（用户看到什么 / 下一步）：
+  静态图、单帧 GIF、开关关闭 → 什么都不变，也不加任何提示；
+  文件太大 / 帧数超过 600 / 解码失败 / ffmpeg 不可用 → 仍是首帧，另加一句
+  "（动图展开失败：…，下面只有首帧，原图共 N 帧）"，模型据此知道"这不是全部"。
+  失败分支测试已钉住 code 与文案；`ok:false` 时调用方一律回退原图。
+
+还有什么没验证：
+  1) 真实 QQ 群里的动图（需重启 DSH 后实测）；
+  2) 合并转发里含多张动图的组合；
+  3) QQ 商城表情（mface）常常没有图片字节，仍只有首帧；
+  4) 本机字体缺失时帧号标注降级为无标注（已知、不阻断）。
+```
+
 ### 已发布 v0.8.0 · 2026-10-31 21:10 · 本轮全部优化
 <!-- release-batch: start=2026-10-31T16:25+08:00 end=2026-10-31T21:10+08:00 commits=a27a1e4..68dc2b7 -->
 
