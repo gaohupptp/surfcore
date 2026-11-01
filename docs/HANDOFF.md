@@ -9,11 +9,9 @@
 
 ### 当前事实
 
-- **HEAD**：`ccab715 release: v0.7.20`（本次改动在其之上，尚未提交）
+- **HEAD**：`cae54db fix(diagnose): SnowLuma 连接诊断分状态化`（在 0.7.20 的 `ccab715` 之上）
 - **package.json version**：`0.7.20`（编辑会话，未改版本、未打 tag）
-- **工作区**：改了 2 个、新增 2 个（`plugins/surfcore/lib/index.js`、`plugins/surfcore/package.json`、
-  `plugins/surfcore/lib/snowluma-diagnose.js`、`plugins/surfcore/scripts/test-snowluma-diagnose.mjs`）
-  + 文档（`docs/cases/2026-11-02-snowluma-diagnosis-hint.md`、cases README 一行、PITFALLS #92、本文件）。
+- **工作区**：干净（改动已提交为 `cae54db`，含代码 + 测试 + 文档）
 
 ### 本次做了什么
 

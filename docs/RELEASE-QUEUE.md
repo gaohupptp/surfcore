@@ -12,9 +12,9 @@
 ## 待发布
 
 ### 批次 2026-11-02 00:40 · SnowLuma 连接诊断分状态化（0.7.20 后）
-<!-- release-batch: start=2026-11-02T00:15+08:00 end=2026-11-02T00:40+08:00 commits=(未提交) -->
+<!-- release-batch: start=2026-11-02T00:15+08:00 end=2026-11-02T00:45+08:00 commits=cae54db -->
 
-**覆盖提交**：本轮工作区改动（HEAD `ccab715` 之上，编辑会话未提交、未改版本）
+**覆盖提交**：`cae54db`（基线 `ccab715` = v0.7.20；编辑会话未改版本、未打 tag）
 **建议**：patch → **0.7.21**
 
 **问题**：`plugins/surfcore/lib/index.js:1689-1704` 的连接诊断只有 `connected === true` 一个判据，
