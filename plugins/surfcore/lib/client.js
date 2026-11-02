@@ -1174,6 +1174,7 @@ F("sessionCwd", "会话工作目录", "留空用 surfcore 根目录", "text", { 
       markRead: "标记已读", closeConversation: "对话收尾", memory: "轻量记忆", slangQuery: "查黑话", slangSubmit: "提交黑话",      getImages: "看图", getForwardMsg: "看合并转发", sendPoke: "拍一拍", listStickers: "表情列表",
       getStickerImage: "表情图片", sendSticker: "发表情", setStickerRemark: "改表情备注",
       stickerNote: "表情笔记", collectSticker: "收藏表情", getSelfImage: "看自己形象", sendVoice: "发语音",
+      sendFile: "发文件", sendGroupFile: "发群文件",
     };
 
     const QQ_ADV_CATEGORIES = [

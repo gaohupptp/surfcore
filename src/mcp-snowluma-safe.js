@@ -363,6 +363,8 @@ const TOOL_CONFIG_FLAGS = {
   qq_slang_submit: 'slangSubmit',
   qq_send_voice: 'sendVoice',
   qq_list_voices: 'sendVoice',
+  qq_send_file: 'sendFile',
+  qq_send_group_file: 'sendGroupFile',
   // 下面这些曾经漏登记。漏一个不是"多注册一个工具"那么轻：桥接那边按 `v2ToolEnabled(flag)`
   // 在**调用期**一律 403，而这里不登记就等于"控制台显示已关闭、模型每次请求仍收到它的完整
   // 描述与参数 schema，然后调用它、再拿到 403"——既白烧 token（本文件开头 176 行起就是为省这份
@@ -577,6 +579,80 @@ server.tool(
       return { content: [{ type: 'text', text: serializeModelData(data) }] };
     } catch (error) {
       return { content: [{ type: 'text', text: `发送失败：${error?.message ?? error}` }], isError: true };
+    }
+  }
+);
+
+// 文件上传要等 SnowLuma 把字节传完，超时必须按文件大小算，不能沿用文本的 15s。
+// 桥接侧公式：60 + 大小/512KiB 秒，夹在 [60, 280]；这里再 +30s 余量，让桥接的
+// 超时/错误信息先回到模型，而不是 MCP 自己先断掉。
+function uploadTimeoutMsFor(filePath) {
+  let sizeBytes = 0;
+  try {
+    const raw = String(filePath ?? '').trim();
+    const local = /^file:/i.test(raw) ? fileURLToPath(raw) : raw;
+    sizeBytes = fs.statSync(local).size;
+  } catch { sizeBytes = 0; }
+  const estSeconds = Math.ceil(sizeBytes / (512 * 1024));
+  const bridgeSeconds = Math.min(280, Math.max(60, estSeconds + 20));
+  return Math.min(bridgeSeconds + 30, 600) * 1000;
+}
+
+function fileSendErrorText(error) {
+  const message = String(error?.message ?? error);
+  const timeoutHint = /超时|timeout/i.test(message)
+    ? '（文件可能已经上传并发出，重试前请先在 QQ 里确认，避免发两遍）'
+    : '';
+  return `发送文件失败：${message}${timeoutHint}`;
+}
+
+server.tool(
+  'qq_send_file',
+  '把一个本机文件作为 QQ 文件发给指定好友（一次调用完成上传 + 发出，不会重复发送）。filePath 必须是绝对路径，且必须位于用户配置的文件发送目录白名单（socialV2.file.allowedDirs）内，否则会被桥接直接拒绝——这是防止模型随意读取本机文件外发的硬限制，不要试图绕过。该工具默认关闭，需在控制台勾选“发文件”；目标好友还需命中 allow.private 白名单。',
+  {
+    userId: z.union([z.number(), z.string()]).describe('好友 QQ 号（必须命中 allow.private 白名单）'),
+    filePath: z.string().describe('本机文件绝对路径（也接受 file:///D:/... 形式）；必须位于 allowedDirs 内'),
+    name: z.string().optional().describe('显示用文件名（含扩展名），省略则用真实文件名；不能含 / \\ : * ? " < > |'),
+    token: z.string().optional().describe('二代会话令牌（reserved2 模式下必填；closed-agent 模式不需要）')
+  },
+  async ({ userId, filePath, name, token }) => {
+    try {
+      const key = `private:${String(userId).trim()}`;
+      const data = await agentApiLongPoll('/api/send/file', {
+        method: 'POST',
+        ...(token ? { headers: { 'x-agent-token': token } } : {}),
+        timeoutMs: uploadTimeoutMsFor(filePath),
+        body: JSON.stringify({ kind: 'private', key, userId: String(userId).trim(), filePath, name, token: token || undefined })
+      });
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: fileSendErrorText(error) }], isError: true };
+    }
+  }
+);
+
+server.tool(
+  'qq_send_group_file',
+  '把一个本机文件上传到指定 QQ 群的群文件（一次调用完成上传 + 发送，不会重复发送）。上传成功后 SnowLuma 会另外发一条群文件消息；该消息在 QQ 客户端里的具体显示形式以实测为准。folder 是群文件里的目录（如 /文档），默认根目录。与 qq_send_file 一样受 allowedDirs 白名单限制，且只在 reserved2 模式下可用（closed-agent 模式只允许私聊 owner）。该工具默认关闭，需在控制台勾选“发群文件”。',
+  {
+    groupId: z.union([z.number(), z.string()]).describe('群号（群聊文件只在 reserved2 模式可用）'),
+    filePath: z.string().describe('本机文件绝对路径（也接受 file:///D:/... 形式）；必须位于 allowedDirs 内'),
+    name: z.string().optional().describe('显示用文件名（含扩展名），省略则用真实文件名；不能含 / \\ : * ? " < > |'),
+    folder: z.string().optional().describe('群文件夹路径，以 / 开头（如 /文档）；省略为根目录 /'),
+    token: z.string().optional().describe('二代会话令牌（reserved2 模式下必填）')
+  },
+  async ({ groupId, filePath, name, folder, token }) => {
+    try {
+      const key = `group:${String(groupId).trim()}`;
+      const data = await agentApiLongPoll('/api/send/file', {
+        method: 'POST',
+        ...(token ? { headers: { 'x-agent-token': token } } : {}),
+        timeoutMs: uploadTimeoutMsFor(filePath),
+        body: JSON.stringify({ kind: 'group', key, groupId: String(groupId).trim(), filePath, name, folder, token: token || undefined })
+      });
+      return { content: [{ type: 'text', text: serializeModelData(data) }] };
+    } catch (error) {
+      return { content: [{ type: 'text', text: fileSendErrorText(error) }], isError: true };
     }
   }
 );

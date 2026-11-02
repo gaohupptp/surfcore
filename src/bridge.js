@@ -1077,6 +1077,9 @@ function loadConfig() {
     getSelfImage: true,
     closeConversation: true,
     sendVoice: false,
+    // 文件发送默认关：这是「把本机文件送出去」的路径，必须由人显式打开。
+    sendFile: false,
+    sendGroupFile: false,
     ...(cfg.socialV2.tools ?? {})
   };
 
@@ -1109,6 +1112,20 @@ function loadConfig() {
     ffmpegPath: '',
     autoReadback: true,
     ...(cfg.socialV2?.voice ?? {})
+  };
+
+  // socialV2.file：AI 发送本机文件（私聊 / 群文件）。
+  // allowedDirs 默认空数组 = 一个都不许发（fail-closed）。这是有意的：文件发送是
+  // prompt injection 最直接的「把本机东西送出去」路径，白名单只能由人工填写绝对路径，
+  // 不能从仓库根目录或用户目录继承。
+  // 目录判定用 realpath 后的真实路径，符号链接/junction 指到外面一律拒绝。
+  cfg.socialV2.file = {
+    allowedDirs: [],
+    maxBytes: 100 * 1024 * 1024,
+    maxPathChars: 260,
+    maxNameChars: 100,
+    maxFolderChars: 64,
+    ...(cfg.socialV2?.file ?? {})
   };
 
   // socialV2.sticker.collect 也需要深度合并，避免旧配置缺失 collect 子项时丢默认值。
@@ -5669,7 +5686,7 @@ async function main() {
           const current = fileV2 ?? ((cfg.socialV2 && typeof cfg.socialV2 === 'object') ? cfg.socialV2 : {});
           const merged = { ...current, ...body };
           // 子对象必须是非 null 对象；null/数组/基本类型会覆盖默认值导致工具开关被绕过，这里直接保留当前值。
-          for (const sub of ['tools', 'wake', 'send', 'wait', 'proactive', 'sticker', 'feedback', 'context', 'tokenGuard', 'history']) {
+          for (const sub of ['tools', 'wake', 'send', 'wait', 'proactive', 'sticker', 'feedback', 'context', 'tokenGuard', 'history', 'file']) {
             if (body[sub] !== undefined && (body[sub] === null || typeof body[sub] !== 'object' || Array.isArray(body[sub]))) {
               merged[sub] = current[sub] ?? {};
             }
@@ -5679,7 +5696,7 @@ async function main() {
             merged.autoReplyCheckMs = Number.isFinite(n) ? Math.max(1000, Math.round(n)) : (current.autoReplyCheckMs ?? 30000);
           }
           // tools：只接受布尔开关
-          const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'slangQuery', 'slangSubmit', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker', 'getSelfImage', 'sendVoice'];
+          const toolFlags = ['getPrompt', 'getUnread', 'getRecent', 'socialState', 'sendGroup', 'sendPrivate', 'reply', 'sendBurst', 'sendMessage', 'waitMessages', 'feedback', 'getMyRecent', 'getMessageDetail', 'getActiveMembers', 'setWakeConfig', 'markRead', 'memory', 'slangQuery', 'slangSubmit', 'getImages', 'getForwardMsg', 'sendPoke', 'listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker', 'getSelfImage', 'sendVoice', 'sendFile', 'sendGroupFile'];
           if (body.tools && typeof body.tools === 'object') {
             merged.tools = { ...(current.tools ?? {}), ...body.tools };
             for (const k of toolFlags) {
@@ -5968,7 +5985,9 @@ async function main() {
             stickerNote: 'qq_sticker_note',
             collectSticker: 'qq_collect_sticker',
             getSelfImage: 'qq_get_self_image',
-            sendVoice: 'qq_send_voice / qq_list_voices'
+            sendVoice: 'qq_send_voice / qq_list_voices',
+            sendFile: 'qq_send_file',
+            sendGroupFile: 'qq_send_group_file'
           };
           const tools = cfg.socialV2?.tools ?? {};
           const stickerToolFlags = new Set(['listStickers', 'getStickerImage', 'sendSticker', 'setStickerRemark', 'stickerNote', 'collectSticker']);
@@ -8729,6 +8748,92 @@ async function main() {
           }
           return;
         }
+        // ── AI 文件发送（一次调用完成「上传 + 发出」；带 key + token 的模型侧专用）──
+        // 和文本发送的区别只有两点：① 只允许白名单目录里的文件；② 走长连接等上传完成。
+        // SnowLuma 的 upload_private_file / upload_group_file 上传成功后自己会发消息，
+        // 所以这里绝不能再补发一次，否则会出双份卡片。
+        if (req.method === 'POST' && url.pathname === '/api/send/file') {
+          const body = await readBody();
+          const token = String(body.token ?? req.headers['x-agent-token'] ?? '').trim();
+          const kind = body.kind === 'group' ? 'group' : 'private';
+          const rawTarget = kind === 'group' ? String(body.groupId ?? '').trim() : String(body.userId ?? '').trim();
+          const key = String(body.key ?? (rawTarget ? `${kind}:${rawTarget}` : '')).trim();
+          const fileCfg = cfg.socialV2?.file ?? {};
+          const fail = (error, status = 400, extra = {}) => sendJson({ ok: false, error, key, ...extra }, status);
+          if (currentMode === 'chat' || currentMode === 'reserved') { fail('发送工具仅限 closed-agent / reserved2 模式使用', 403); return; }
+          if (socialV2.paused && token) { fail('AI 已暂停，当前不允许执行发送工具', 403); return; }
+          if (!rawTarget) { fail(kind === 'group' ? 'groupId 不能为空' : 'userId 不能为空'); return; }
+          if (currentMode === 'reserved2' && !token) { fail('reserved2 模式发送必须携带 agent token', 403); return; }
+          if (token && !agentTokenOk(key, token)) { fail('agent token 无效', 403); return; }
+          const flag = kind === 'group' ? 'sendGroupFile' : 'sendFile';
+          if (token && !v2ToolEnabled(flag)) {
+            fail(`工具未启用：${flag}（在控制台勾选「发文件 / 发群文件」后重试）`, 403, { code: 'TOOL_DISABLED' });
+            return;
+          }
+          if (shouldBlockSilentReply(key)) { fail('静默模式已开启，当前不允许发送文件', 403); return; }
+          const keyMatch = /^(group|private):(\d+)$/.exec(key);
+          if (!keyMatch || keyMatch[1] !== kind) { fail(`key 格式无效（应为 ${kind}:<号码> 且与目标一致）`); return; }
+          const id = Number(keyMatch[2]);
+          if (!Number.isFinite(id) || id <= 0 || !modeAllowed(key, kind, id, cfg, currentMode)) {
+            fail('目标不在当前模式允许范围内（群文件请在 reserved2 模式使用）', 403);
+            return;
+          }
+          // 先做纯校验（不改状态），再动用会占额度的守卫，避免校验失败白扣额度。
+          let file;
+          try { file = resolveSendableFile(body.filePath, fileCfg); } catch (error) { fail(error.message, error.code || 400); return; }
+          try { assertOutboundAuditOk(key, `[文件:${path.basename(file.name)}]`); } catch (error) { fail(error.message, 403); return; }
+          let snowName;
+          let snowFolder = '/';
+          try {
+            snowName = sanitizeSendFileName(body.name, file.name, fileCfg);
+            if (kind === 'group' && body.folder !== undefined) snowFolder = sanitizeSendFolder(body.folder, fileCfg);
+          } catch (error) { fail(error.message, error.code || 400); return; }
+          const st = getSocialV2State(key);
+          const fishBlock = fishGuardSendBlock(key, st);
+          if (fishBlock) { sendJson({ ok: false, ...fishBlock }, 403); return; }
+          const tokenBlock = tokenGuardSendBlock(key, st, 1);
+          if (tokenBlock) { sendJson({ ok: false, ...tokenBlock }, 429); return; }
+          // 估算上传耗时：按 512 KiB/s 保守算，夹在 [60, 280] 秒；上限 280s 是给
+          // 客户端 300s 墙留余量。真实耗时取决于上行带宽，低于 ~390 KiB/s 时 100MiB 会超时。
+          const estSeconds = Math.ceil(file.size / (512 * 1024));
+          const timeoutSeconds = Math.min(280, Math.max(60, estSeconds + 20));
+          const now = Date.now();
+          try {
+            const rateLimit = sendRateLimitInfo(key, st, cfg.socialV2?.send ?? {}, 1);
+            if (rateLimit) { reportLimitEvent(key, rateLimit); sendJson(rateLimit, 429); return; }
+            st.sendTimes.push(now);
+            if (st.sendTimes.length > 500) st.sendTimes = st.sendTimes.slice(-500);
+            const action = kind === 'group' ? 'upload_group_file' : 'upload_private_file';
+            const params = kind === 'group'
+              ? { group_id: id, file: file.path, name: snowName, folder: snowFolder, upload_file: true }
+              : { user_id: id, file: file.path, name: snowName, upload_file: true };
+            log(`[send-file] ${key} ${action} ${file.name} (${file.size} 字节, 超时 ${timeoutSeconds}s)`);
+            const result = await onebotCallLong(action, params, timeoutSeconds * 1000);
+            if (!result || !result.file_id) throw new Error('SnowLuma 未返回 file_id（上传可能未完成）');
+            st.lastActionAt = now;
+            saveSocialV2State();
+            noteSendSuccess(key);
+            appendActivity(`${key} [send-file] ${kind === 'group' ? '群文件' : '私聊文件'} ${snowName} (${file.size} 字节) file_id=${result.file_id}`);
+            log(`[send-file] ${key}: 成功 file_id=${result.file_id}`);
+            sendJson({ ok: true, key, kind, file_id: result.file_id, name: snowName, size: file.size });
+          } catch (error) {
+            // 只回滚本次预占；文件是否已到服务端无法从这里判断，错误里要提醒用户。
+            const idx = st.sendTimes.indexOf(now);
+            if (idx >= 0) st.sendTimes.splice(idx, 1);
+            saveSocialV2State();
+            noteSendFailure(key, error);
+            log(`[send-file] ${key}: 失败 ${error?.message ?? error}`);
+            appendActivity(`${key} [send-file] 失败：${String(error?.message ?? error).slice(0, 120)}`);
+            sendJson({
+              ok: false,
+              error: error?.message ?? String(error),
+              code: error?.code ?? 'SEND_FILE_FAILED',
+              key,
+              hint: '若提示超时，文件可能已经上传并发出；请先在 QQ 里确认，再决定是否重试（重试会产生第二份文件消息）'
+            }, 502);
+          }
+          return;
+        }
         // ── 清除上下文 / 清空工作区 ──────────────────────────────────────────
         if (req.method === 'POST' && url.pathname === '/api/session/reset') {
           const body = await readBody();
@@ -9238,6 +9343,130 @@ async function main() {
       throw new Error(`OneBot ${action} 失败: ${body.wording || body.retcode || res.status}`);
     }
     return body.data;
+  }
+
+  // ── AI 文件发送：长连接 OneBot 调用 + 目录白名单 + 参数清洗 ──────────────
+  // 文件上传要等 SnowLuma 把整个文件传完（传完它自己还会发一条文件消息），
+  // 几 MB 就可能超过 30s。这里用 node:http 自管计时器，避开 undici 的 300s
+  // headersTimeout（那是「客户端等响应头」的墙，不是服务端 requestTimeout）。
+  // 注意：这个计时器只能管客户端，管不了服务端已经开始的上传。
+  function onebotCallLong(action, params, timeoutMs) {
+    const base = String(cfg.snowluma?.httpUrl || 'http://127.0.0.1:3000').replace(/\/+$/, '');
+    let target;
+    try { target = new URL(`${base}/${action}`); } catch { return Promise.reject(new Error(`SnowLuma 地址无效: ${base}`)); }
+    const payload = JSON.stringify(params ?? {});
+    const limit = Math.max(1000, Number(timeoutMs) || 60000);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let timer = null;
+      const finish = (err, value) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        if (err) reject(err); else resolve(value);
+      };
+      const req = http.request({
+        protocol: target.protocol,
+        hostname: target.hostname,
+        port: target.port || (target.protocol === 'https:' ? 443 : 80),
+        path: `${target.pathname}${target.search}`,
+        method: 'POST',
+        timeout: 0,
+        headers: {
+          'content-type': 'application/json',
+          'content-length': Buffer.byteLength(payload),
+          ...(cfg.snowluma?.accessToken ? { authorization: `Bearer ${cfg.snowluma.accessToken}` } : {})
+        }
+      }, (res) => {
+        const chunks = [];
+        let size = 0;
+        res.on('data', (chunk) => {
+          size += chunk.length;
+          if (size > 4 * 1024 * 1024) { req.destroy(new Error('SnowLuma 响应过大')); return; }
+          chunks.push(chunk);
+        });
+        res.on('end', () => {
+          let body = {};
+          try { body = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch {}
+          if (res.statusCode === 401) return finish(new Error('SnowLuma 返回 401（snowluma.accessToken 不对？）'));
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            return finish(new Error(`SnowLuma HTTP ${res.statusCode}: ${String(body.wording || '').slice(0, 200) || '(no wording)'}`));
+          }
+          if (body.status !== 'ok' || body.retcode !== 0) {
+            return finish(new Error(`SnowLuma ${action} 失败 (retcode=${body.retcode}): ${String(body.wording || '').slice(0, 200) || '(no wording)'}`));
+          }
+          finish(null, body.data);
+        });
+      });
+      timer = setTimeout(() => {
+        req.destroy(Object.assign(
+          new Error(`SnowLuma ${action} 超时（${Math.round(limit / 1000)}s）：文件可能仍在服务端上传，重试前请先确认是否已发出，避免重复的卡片`),
+          { code: 'SNOWLUMA_TIMEOUT' }
+        ));
+      }, limit);
+      if (typeof timer.unref === 'function') timer.unref();
+      req.on('error', (err) => finish(Object.assign(err, { code: err.code || 'SNOWLUMA_REQUEST_FAILED' })));
+      req.write(payload);
+      req.end();
+    });
+  }
+
+  // 路径闸门：只允许白名单目录里的普通文件。先按用户给的路径判一次，
+  // realpath 之后再用真实路径判一次——符号链接/junction 指到目录外面一律拒绝。
+  function resolveSendableFile(rawPath, fileCfg) {
+    const raw = String(rawPath ?? '').trim();
+    if (!raw) { const e = new Error('filePath 不能为空'); e.code = 400; throw e; }
+    const pathLimit = Number(fileCfg?.maxPathChars) || 260;
+    if (raw.length > pathLimit) { const e = new Error(`filePath 过长（>${pathLimit} 字符）`); e.code = 400; throw e; }
+    let local = raw;
+    if (/^file:/i.test(local)) {
+      try { local = fileURLToPath(local); } catch { const e = new Error('filePath 的 file:// 形式无法解析'); e.code = 400; throw e; }
+    }
+    if (!path.isAbsolute(local)) { const e = new Error('filePath 必须是绝对路径（或 file:// 绝对路径）'); e.code = 400; throw e; }
+    let real;
+    try { real = fs.realpathSync(local); } catch { const e = new Error(`文件不存在或无法访问: ${path.basename(local)}`); e.code = 400; throw e; }
+    let st;
+    try { st = fs.statSync(real); } catch { const e = new Error('文件无法读取（权限不足？）'); e.code = 400; throw e; }
+    if (!st.isFile()) { const e = new Error('filePath 不是普通文件（目录/设备文件都不允许）'); e.code = 400; throw e; }
+    if (st.size <= 0) { const e = new Error('文件为空，拒绝发送'); e.code = 400; throw e; }
+    const maxBytes = Number(fileCfg?.maxBytes) || 100 * 1024 * 1024;
+    if (st.size > maxBytes) { const e = new Error(`文件过大（${st.size} 字节 > 上限 ${maxBytes} 字节）`); e.code = 400; throw e; }
+    const dirs = Array.isArray(fileCfg?.allowedDirs) ? fileCfg.allowedDirs : [];
+    if (!dirs.length) { const e = new Error('未配置文件发送目录白名单（socialV2.file.allowedDirs），已拒绝发送'); e.code = 403; throw e; }
+    const realDirs = [];
+    for (const d of dirs) {
+      try { realDirs.push(fs.realpathSync(String(d))); } catch { /* 配置里不存在的目录直接跳过 */ }
+    }
+    const inside = realDirs.some((dir) => {
+      const withSep = dir.endsWith(path.sep) ? dir : dir + path.sep;
+      return real === dir || real.startsWith(withSep);
+    });
+    if (!inside) { const e = new Error('该文件不在允许发送的目录内（socialV2.file.allowedDirs），已拒绝'); e.code = 403; throw e; }
+    return { path: real, size: st.size, name: path.basename(real) };
+  }
+
+  // 显示用文件名：只影响 QQ 里的名字，不参与路径拼接。空 → 用真实文件名。
+  function sanitizeSendFileName(name, fallback, fileCfg) {
+    const raw = String(name ?? '').trim();
+    if (!raw) return fallback || '';
+    if (/[\\/\u0000-\u001f\u007f<>:"|?*]/.test(raw)) {
+      const e = new Error('name 含非法字符（不能有 / \\ : * ? " < > | 或控制字符）'); e.code = 400; throw e;
+    }
+    const limit = Number(fileCfg?.maxNameChars) || 100;
+    if (Array.from(raw).length > limit) { const e = new Error(`name 过长（>${limit} 字符）`); e.code = 400; throw e; }
+    return raw;
+  }
+
+  // 群文件夹路径：只允许 QQ 群文件的相对目录，如 "/文档/项目"。
+  function sanitizeSendFolder(folder, fileCfg) {
+    const raw = String(folder ?? '').trim();
+    if (!raw || raw === '/') return '/';
+    if (!raw.startsWith('/')) { const e = new Error("folder 必须以 / 开头（例如 /文档）"); e.code = 400; throw e; }
+    if (raw.includes('..') || raw.includes('//')) { const e = new Error('folder 不允许包含 .. 或 //'); e.code = 400; throw e; }
+    if (/[\u0000-\u001f\u007f\\:*?"<>|]/.test(raw)) { const e = new Error('folder 含非法字符'); e.code = 400; throw e; }
+    const limit = Number(fileCfg?.maxFolderChars) || 64;
+    if (raw.length > limit) { const e = new Error(`folder 过长（>${limit} 字符）`); e.code = 400; throw e; }
+    return raw;
   }
 
   // B站视频卡片：默认发 com.tencent.structmsg 新闻链接卡（普通分享卡，点开进 B站）。

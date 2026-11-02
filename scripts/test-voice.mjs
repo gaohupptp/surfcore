@@ -214,7 +214,11 @@ console.log('## 控制台契约');
   const html = fs.readFileSync(path.join(ROOT, 'public', 'console.html'), 'utf8');
   const bridgeSrc = fs.readFileSync(path.join(ROOT, 'src', 'bridge.js'), 'utf8');
   ok(html.includes('data-v2-tool="sendVoice"'), '控制台有 sendVoice 工具开关');
-  ok(bridgeSrc.includes("'sendVoice']"), 'config API 的 toolFlags 含 sendVoice');
+  // toolFlags 是配置保存时归一化用的白名单：语音在，文件发送的两个开关也要在
+  // （否则控制台勾选会被丢弃/静默回退）。断言从「数组以 'sendVoice'] 结尾」放宽为
+  // 「toolFlags 这一行同时含三个 flag」，避免数组继续增长时又误报。
+  const toolFlagsLine = (bridgeSrc.match(/const toolFlags = \[[^\]]*\]/) || [''])[0];
+  ok(["'sendVoice'", "'sendFile'", "'sendGroupFile'"].every((flag) => toolFlagsLine.includes(flag)), 'config API 的 toolFlags 含 sendVoice/sendFile/sendGroupFile');
   const uniq = (a) => [...new Set(a)].sort();
   const views = uniq([...html.matchAll(/data-view="([a-z0-9-]+)"/g)].map((m) => m[1]));
   const pages = uniq([...html.matchAll(/data-page="([a-z0-9-]+)"/g)].map((m) => m[1]));
