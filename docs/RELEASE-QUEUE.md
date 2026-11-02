@@ -11,6 +11,59 @@
 
 ## 待发布
 
+### QQ 文件发送工具（私聊 + 群） · 2026-11-03 07:15
+<!-- release-batch: start=2026-11-03T06:10+08:00 end=2026-11-03T07:15+08:00 commits=6797195 -->
+
+**覆盖提交**：`6797195`（代码+测试+case；紧随其后的 docs 提交只改本文件与索引）
+**建议**：**0.9.0**（新增接口与工具，向后兼容，无破坏性变更）
+**当前版本**：`0.8.6`，未 bump / 未 tag / 未 push
+
+**本轮范围**：
+
+1. **桥接新增文件发送端点** `POST /api/send/file`（`src/bridge.js`）——闸门顺序完全复刻文本发送：
+   模式（chat/reserved 拒）→ 暂停 → 目标非空 → reserved2 令牌 → `agentTokenOk` → `v2ToolEnabled` →
+   静默 → key 正则 → `modeAllowed` → 路径白名单 → `assertOutboundAuditOk`（只看 basename）→
+   名字/文件夹净化 → 鱼群/Token 守卫 → 限速 → 调 SnowLuma → 记账；失败回滚 `sendTimes` + 502，
+   错误里带「文件可能已发出，先在 QQ 确认」的 hint。
+2. **路径闸门 `resolveSendableFile`**：只收绝对路径与 `file://`；`realpathSync` 后再判目录前缀，
+   junction / symlink 逃不出去；拒目录、拒空文件、超 `maxBytes` 拒；`allowedDirs` 默认空 = 默认拒（fail-closed）。
+3. **两跳超时**：`onebotCallLong` 用 `node:http` + 自管计时器（不走 undici 的 300s `headersTimeout`），
+   桥接 `clamp(60,280,ceil(size/512KiB)+20)` 秒，MCP 再 +30s 且上限 600s，保证桥接先报错、报错更具体。
+   （方案早期误加的 `server.requestTimeout` 已删——它只管"收请求"，管不到"等响应"。）
+4. **两个 MCP 工具** `qq_send_file`（私聊）/ `qq_send_group_file`（群），各自独立开关 `sendFile` / `sendGroupFile`，
+   **默认 false**；`TOOL_CONFIG_FLAGS`、设置页勾选框、`TOOL_LABELS`、`toolFlags`、`toolMap`、配置保存守卫六处联动。
+5. **不重复发送**：SnowLuma 两个 action 自带「上传 + 发文件消息」，桥接与 MCP 都不补发。
+6. **测试**：`scripts/test-voice.mjs` 里对 `toolFlags` 数组的精确后缀断言改为按行断言（数组变长会误报）。
+
+**案例**：[2026-11-03-qq-send-file.md](cases/2026-11-03-qq-send-file.md)（`docs/cases/README.md` 已登记）
+
+**验证**：`npm run test:audit` **106/110**（4 条既有失败：voice-system、voice-pack-import、
+agent-preset-patches 漂移、release-manifest 相对 git HEAD 过期，均与本批无关）；
+`node scripts/test-voice.mjs` 83/0；`npm run test:regressions` 全绿；
+`npm run test:mcp-servers` snowluma **37 tools**（含两个新工具）。
+真机实测：私聊 `file_id=776cdde7…`(67B)、群聊 `file_id=/44843051…`(43B)，均 `ok:true`；
+14 条失败路径（越界/相对路径/junction 逃逸/超大/空文件/非法名/坏令牌等）逐条返回可行动报错。
+
+**未验证**：群文件在 QQ 客户端是「原生卡片」还是只进群文件列表（源码只能证明发了 OIDB `0x6D9/4`）；
+`sendFile=false` 时 403 分支未实测（改开关需写配置+重启桥接）；>100MiB 的真实大文件未发（只用稀疏文件验了大小闸）。
+
+**交接块**（可直接复制给发布会话）：
+
+```
+改了哪些文件：src/bridge.js、src/mcp-snowluma-safe.js、public/console.html、
+plugins/surfcore/lib/client.js、scripts/test-voice.mjs、docs/cases/2026-11-03-qq-send-file.md、
+docs/cases/README.md（config.json 被 gitignore，不进提交：tools.sendFile/sendGroupFile=true、
+socialV2.file.allowedDirs=["D:\\QQ文件发送区"]）
+测过什么：test:audit 106/110（4 条既有失败）、test-voice 83/0、test:regressions 全绿、
+test:mcp-servers 37 tools；真机私聊+群聊各发一条中文名文件成功；14 条失败路径全对
+建议：minor（0.9.0）—— 新增接口与工具，向后兼容，开关默认关
+case 文档：docs/cases/2026-11-03-qq-send-file.md
+改动层级：接口层新增（/api/send/file）+ 实现层（MCP 工具）；不影响既有端点与既有工具
+完整逻辑与爆炸半径：见 case「完整逻辑」段（白名单 fail-closed、失败回滚 sendTimes、不碰密钥/用户数据）
+失败路径：见 case 表格（14 条，均带 code/error/hint，用户可直接改路径/改名重试）
+还有什么没验证：群文件客户端呈现形式；sendFile=false 的 403；真实 >100MiB 上传
+```
+
 ### 游戏名匹配 + 天数唯一真源 · 2026-11-03 02:05
 <!-- release-batch: start=2026-11-03T01:35+08:00 end=2026-11-03T02:05+08:00 commits=25e463a -->
 
