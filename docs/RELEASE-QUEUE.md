@@ -11,6 +11,52 @@
 
 ## 待发布
 
+### 游戏名匹配 + 天数唯一真源 · 2026-11-03 02:05
+<!-- release-batch: start=2026-11-03T01:35+08:00 end=2026-11-03T02:05+08:00 commits=25e463a -->
+
+**覆盖提交**：`25e463a`（代码+测试；紧随其后的 docs 提交只改文档）
+**建议**：**0.8.7**（纯修 bug，无接口变化，向后兼容）
+**当前版本**：`0.8.6`，未 bump / 未 tag / 未 push
+
+**本轮范围**：
+
+1. **天数上限收成唯一真源** —— 新增 `plugins/surfcore/tools/lib/kind-limits.mjs`：
+   `KIND_LIMITS`（冻结）/ `limitFor()` / `clampRecallDays()`；`gamefeed` 的召回窗口与
+   `daily` 的硬闸共用这一份。二类（游戏 AI 二创）**21 → 35 天**，`best 999` / `anime 14` / `gaming 14` 不变。
+   `--days` 语义改为「只能收紧」：非法值回退默认并打警告，超上限夹回并警告（以前会静默变成 NaN 或 1 天）。
+2. **游戏名识别容忍书写变体** —— `lib/games.mjs` 新增 `GAME_ALIASES` / `normalizeForMatch()` /
+   `mentionsGame()`：CJK 名字先剥空白、`\p{P}`、`\p{S}`（含 emoji）再比，认「星穹铁道」「崩铁」
+   「鳴潮」「绝区 0」「絕區零」「ZZZ」等；ASCII 别名用词边界，避免粘进英文单词。
+   `gamefeed.mjs` 与 `daily.mjs` 的判断都换成它，daily 报错文案补「简称/符号变体也算」。
+3. **测试** —— 新增 `scripts/test-game-match.mjs`（21 组），已登记进 `scripts/test-audit.mjs`。
+
+**案例**：[2026-11-03-gamefeed-match-and-days.md](cases/2026-11-03-gamefeed-match-and-days.md)
+（`docs/cases/README.md` 已登记，`docs/PITFALLS.md` #102）
+
+**验证**：`node scripts/test-game-match.mjs` 21/21 通过；`npm run test:audit` 108/110（两条既有失败：
+preset patch drift、音色引擎占用）；两条被卡的视频重算通过（`BV1GFH96bEzt` 25 天、
+`BV175J96wEdi` 17 天）；`gamefeed --game 崩坏星穹铁道 --no-remember` 端到端跑通。
+
+**未验证**：`daily` 真正发出去那条链路没跑；别名表未做繁简转换（「崩壞星穹鐵道」靠「星穹铁道」别名兜住）。
+
+**发布交接块（可直接转发）**：
+
+```
+改了哪些文件：plugins/surfcore/tools/lib/kind-limits.mjs（新）、lib/games.mjs、
+  commands/gamefeed.mjs、commands/daily.mjs、scripts/test-game-match.mjs（新）、scripts/test-audit.mjs、
+  docs/cases/2026-11-03-gamefeed-match-and-days.md（新）+ README/PITFALLS/HANDOFF/本文件
+测过什么：test-game-match 21/21；test-audit 108/110（2 条既有失败与本次无关）；
+  gamefeed 端到端跑通；两条被卡的视频按新规则重算 ✅
+建议：patch（0.8.7）。纯修 bug，无接口变化，向后兼容；配置无需迁移
+case 文档：docs/cases/2026-11-03-gamefeed-match-and-days.md
+改动层级：实现层（两个命令的内部判断与常量），接口层无变化
+完整逻辑与爆炸半径：见 case「完整逻辑」段 —— 2 个进程 × 各 1 处读取 = 静默 3 分；
+  最坏是连续几天没有可发的二类动态，不丢数据、不花钱
+失败路径：--days abc → 警告并回退默认；--days 35 → 警告并夹回上限；
+  daily 判太旧 → `太旧了（N 天前，上限 M 天）` + exit 5；均有测试钉住
+还有什么没验证：daily 真正发出去的链路；繁简转换（只做了别名兜底）
+```
+
 ### 已发布 v0.8.0 · 2026-10-31 21:10 · 本轮全部优化
 <!-- release-batch: start=2026-10-31T16:25+08:00 end=2026-10-31T21:10+08:00 commits=a27a1e4..68dc2b7 -->
 

@@ -7,6 +7,47 @@
 
 ---
 
+## 快照：2026-11-03 01:45（游戏名带符号认不出 + 二类天数两边各写一份）
+
+### 当前事实
+
+- **HEAD**：`5ad982a feat(mcp): 让模型看懂 QQ 群聊和私聊里的动图表情包`（分支 `pr/gif-middleware`，
+  已开上游 PR Mieksido/surfcore#53，等维护者回应）
+- **package.json version**：`0.8.6`（未改版本，未打 tag）
+- **工作区**：本次新增 `plugins/surfcore/tools/lib/kind-limits.mjs`、`scripts/test-game-match.mjs`、
+  `docs/cases/2026-11-03-gamefeed-match-and-days.md`；改了 `lib/games.mjs`、
+  `commands/gamefeed.mjs`、`commands/daily.mjs`、`scripts/test-audit.mjs`、`docs/{cases/README,PITFALLS,HANDOFF,RELEASE-QUEUE}.md`。
+  **另有一处与本次无关的未提交改动**：`plugins/surfcore/tools/commands/notify.mjs`（桌面通知 AUMID 修复，
+  不是本轮做的，别顺手提交）。
+- 本地仍挂着两条未合并分支：`local/snowluma-diagnose-fix`（SnowLuma 诊断分状态化）、
+  `pr/gif-middleware`（GIF 中间层 + 本轮改动）。上游 `origin/main` = `59ec306`（v0.8.6）。
+
+### 本轮做了什么
+
+- **问题**：二类动态卡住 —— `BV1GFH96bEzt`（25 天）被 daily 判「太旧了（上限 21 天）」；
+  `BV175J96wEdi` 标题是「Ai代码视角下的【崩坏 · 星穹铁道】…」，裸 `includes()` 认不出。
+- **根因**：① gamefeed 的召回窗口与 daily 的 `LIMITS` 是两份写死的 `21/14` 拷贝，
+  `--days` 放宽了也会被 daily 拒掉；② 认游戏名用裸 `text.includes()`，不认空格/间隔号/简称/繁体。
+- **做法**：新增 `lib/kind-limits.mjs` 做唯一真源（二类 21 → **35** 天，`--days` 只能收紧）；
+  `lib/games.mjs` 新增 `GAME_ALIASES` + `normalizeForMatch()` + `mentionsGame()`；
+  两个命令的判断都换成 `mentionsGame()`。
+
+### 验证
+
+- `node scripts/test-game-match.mjs` → 21 组全过（真实标题、误触发、`--days` 垃圾输入、
+  「别再退回 `includes()`」的源码静态检查），已登记进 `scripts/test-audit.mjs`。
+- 两条被卡的视频按新规则重算：`BV1GFH96bEzt days=25 ✅`、`BV175J96wEdi days=17 ✅`。
+- `node plugins/surfcore/tools/bili.mjs gamefeed --game 崩坏星穹铁道 --no-remember --n 6` 端到端跑通。
+- `npm run test:audit`：**107/109**（两条既有失败与本改动无关：preset patch drift、音色引擎占用）。
+
+### 未验证 / 下一步
+
+- `daily` 真正发出去的链路没跑（只核对了校验逻辑），下一次真实发布时留意有没有新的误拦。
+- 别名表只覆盖常见写法；繁体全称「崩壞星穹鐵道」目前靠「星穹铁道」别名兜住（不做繁简转换）。
+- PR #53 仍等维护者；用户喊「继续关注」时用 `state/pr53-watch.json` 的基线恢复轮询。
+
+---
+
 ## 快照：2026-11-02 09:40（GIF 中间层：QQ 动图不再只剩首帧）
 
 ### 当前事实

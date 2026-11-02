@@ -3282,3 +3282,50 @@ ode scripts/setup-dsh.mjs desktop 恢复 bundle + 3 个 MCP 条目）。
 3. 缓存键只有内容 sha256 是不够的：采样参数变了还会命中旧结果 → 键里必须带上参数。
 4. 胶片条会进 DSH 附件库（内容寻址、同字节只存一份、**永不自动清理**），一条动图 ≈180KB；
    按像素算 token 与文件字节无关，压字节只省磁盘。
+
+---
+
+## #102（2026-11-03）「崩坏 · 星穹铁道」认不出来 + 天数上限两边各写一份，`--days` 是假放宽
+
+**现象**：
+- 二类（游戏 AI 二创）连续卡住：`BV1GFH96bEzt`（25 天前、3.3 万播放、10.7% 赞播比）被
+  `daily` 判 `太旧了（26 天前，上限 21 天）` 后 `exit(5)`；
+  `BV175J96wEdi`（17 天、5.4 万播放、13.7% 赞播比）因为在 gamefeed 就判成"不是这款游戏"而**从未进候选**。
+- 两处都不报错、不提示配置问题：一处静默从候选里消失，一处只在发布那一刻拦下。
+
+**根因**：
+- `plugins/surfcore/tools/commands/gamefeed.mjs` 的召回窗口 `21/14` 与
+  `plugins/surfcore/tools/commands/daily.mjs` 的 `LIMITS`（`21/14`）是**两份写死的拷贝**，
+  值恰好相同 → `gamefeed --days 35` 能把 30 天前的视频推出来、再被 daily 拒掉，「放宽」是假的。
+- 认游戏名用的是裸 `text.includes(GAME)`：标题里只要多一个空格或间隔号（`崩坏 · 星穹铁道`、
+  `崩坏：星穹铁道`）就匹配不上；简称（`星穹铁道`/`崩铁`）、繁体（`鳴潮`/`絕區零`）、
+  `ZZZ` 这些常见写法也全都不认。
+
+**修法**（本次改动，未发版）：
+- 新增 `plugins/surfcore/tools/lib/kind-limits.mjs`：`KIND_LIMITS`（冻结）+ `limitFor()` +
+  `clampRecallDays()`，**gamefeed 与 daily 共用一份**；二类天数 21 → **35**，其余不变。
+  `--days` 语义改成「只能收紧」：非法值回退默认并打警告，超上限夹回并打警告。
+- `plugins/surfcore/tools/lib/games.mjs`：新增 `GAME_ALIASES` / `normalizeForMatch()` /
+  `mentionsGame()`。CJK 名字先剥掉空白、`\p{P}`、`\p{S}`（含 emoji）再比；
+  ASCII 别名（`zzz`/`genshin`/`endfield`）用词边界，避免粘进英文单词。
+- `gamefeed.mjs` 与 `daily.mjs` 的判断都换成 `mentionsGame()`，daily 的报错文案补「简称/符号变体也算」。
+- 回滚：`git revert <commit>`；没有状态文件格式变化。
+
+**未做**：
+- 别名表只覆盖常见写法，繁体全称「崩壞星穹鐵道」目前靠「星穹铁道」别名兜住（归一化不做繁简转换）。
+- `gamefeed` 的 3 天冷却 / 30 天备忘仍是手写，`lib/feed-core.mjs` 已有等价的
+  `filterRecentlyPicked` / `prunePickedMap`，可择机收敛。
+- 真实发布链路（daily 真发）没跑，只核对了校验逻辑。
+
+**验证**：`scripts/test-game-match.mjs` 21 组全过（真实标题、误触发、门槛唯一真源、
+`--days` 六种垃圾输入、以及两条「别再退回 `includes()`」的源码静态检查），已登记进
+`scripts/test-audit.mjs`。两条被卡的视频按新规则重算：`BV1GFH96bEzt days=25 ✅`、
+`BV175J96wEdi days=17 ✅`；`gamefeed --game 崩坏星穹铁道 --no-remember` 端到端跑通。
+
+**教训**：
+1. 同一个数字出现在两个命令里，只要有一处能"放宽"，用户就会以为放宽生效了 —— 上限要抽成唯一真源，
+   并且**收紧才允许、放宽要拒绝并说明**，否则只是在制造"候选合格但发不出去"的假象。
+2. 名字匹配别用裸 `includes()`：中文标题里空格/间隔号/全角冒号/emoji 是常态，
+   先归一化（剥标点符号）再比，比写一堆 `||` 稳。
+3. `--days abc` 这类垃圾输入以前会变成 `NaN`，而 `x > NaN` 恒 false → 过滤器**静默失效**、
+   所有内容都放行。数值参数必须显式校验，别让 `NaN` 替你做决定。
