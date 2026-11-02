@@ -15,7 +15,8 @@ import path from 'node:path'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { bestToday, todayScores } from '../lib/scores.mjs'
-import { currentGame, advanceRotation, GAMES } from '../lib/games.mjs'
+import { currentGame, advanceRotation, GAMES, mentionsGame } from '../lib/games.mjs'
+import { KIND_LIMITS } from '../lib/kind-limits.mjs'
 import { rememberKind } from '../lib/my-dynamics.mjs'
 import { kindsNow, dynamicsEnabled, dynamicsGapMin, slotOf, dueKind, withPrefix, stripPrefix, CATCHUP_DAY } from '../lib/kinds.mjs'
 import { config } from '../lib/config.mjs'
@@ -147,13 +148,9 @@ if (CATCHUP) {
 }
 
 // ── 质量与选题 ────────────────────────────────────────────────
-// 信号正则在 lib/kind-signals.mjs（可单测）；这里只保留各档的硬门槛。
-const LIMITS = {
-  best: { days: 999, play: 0, likeRate: 0 },
-  game: { days: 21, play: 2000, likeRate: 0.02 },
-  anime: { days: 14, play: 5000, likeRate: 0.025 },
-  gaming: { days: 14, play: 5000, likeRate: 0.025 },
-}
+// 信号正则在 lib/kind-signals.mjs（可单测）；各档的天数/播放/赞播比在
+// lib/kind-limits.mjs —— 和 gamefeed 的召回窗口是**同一份**，改一次两边同时生效。
+const LIMITS = KIND_LIMITS
 
 async function viewOf(bvid) {
   try {
@@ -204,7 +201,7 @@ if (KIND === 'best') {
   const bad = []
   if (KIND === 'game') {
     if (!GAMES.includes(game)) bad.push(`轮换的游戏名异常：${game}`)
-    if (!text.includes(game)) bad.push(`标题/简介里没有「${game}」`)
+    if (!mentionsGame(text, game)) bad.push(`标题/简介里没有「${game}」（简称/符号变体也算，如「崩坏 · 星穹铁道」）`)
     if (!hasKindSignal('game', text)) bad.push('标题/简介里没有 AI 二创的信号')
   } else if (KIND === 'anime' && !hasKindSignal('anime', text)) {
     bad.push('标题/简介里没有动漫/MAD/新番的信号')

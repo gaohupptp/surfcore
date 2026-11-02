@@ -92,6 +92,9 @@ const tests = [
   // GIF 中间层：动图解码/采样/渲染成 16 帧 4×4 胶片条；6 条 fail-open 分支
   // （静态/单帧/关闭/超体积/超帧数/坏数据）都必须退回首帧而不是阻断消息。
   'test-gif-middleware.mjs',
+  // 游戏名识别（容忍「崩坏 · 星穹铁道」这类符号/简称写法）+ 发布天数门槛唯一真源
+  // （gamefeed 召回窗口与 daily 硬闸共用 lib/kind-limits.mjs，--days 只能收紧）。
+  'test-game-match.mjs',
   // GitHub issue 回归：#22 模式 user 层优先 / #11/#19 回合判忙租约 / #29 机器人身份注入。
   'test-issue-regressions.mjs',
   // 二代「会话初始提示词」：只在首次唤醒注入、管理面隔离、损坏文件只读降级、

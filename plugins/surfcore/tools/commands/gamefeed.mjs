@@ -12,7 +12,8 @@ import { readWatchHistory } from '../lib/watch-history.mjs'
 import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
-import { GAMES, currentGame, queriesFor } from '../lib/games.mjs'
+import { GAMES, currentGame, queriesFor, mentionsGame } from '../lib/games.mjs'
+import { clampRecallDays } from '../lib/kind-limits.mjs'
 
 const argv = process.argv.slice(2)
 const opt = {}
@@ -25,7 +26,10 @@ for (let i = 0; i < argv.length; i += 1) {
   }
 }
 const FOR = String(opt.for ?? 'game')
-const DAYS = Number(opt.days ?? (FOR === 'game' ? 21 : 14))
+// 召回窗口默认取该类的发布上限（lib/kind-limits.mjs，和 daily 的硬闸同一个数）；
+// --days 只能收紧，不能放宽 —— 放宽了 daily 也会拒。
+const RECALL = clampRecallDays(opt.days, FOR)
+const DAYS = RECALL.days
 const N = Number(opt.n ?? 8)
 
 const TOPICS = {
@@ -44,6 +48,14 @@ const TOPICS = {
 if (FOR !== 'game' && !TOPICS[FOR]) {
   console.error('✗ --for 只能是 game（AI 二创）/ anime（动漫）/ gaming（游戏区）')
   process.exit(2)
+}
+
+const FOR_LABEL = FOR === 'game' ? '二类（游戏 AI 二创）' : TOPICS[FOR].name
+if (RECALL.invalid) {
+  console.error(`⚠ --days 不是有效天数（收到「${String(opt.days)}」），已按默认 ${DAYS} 天取`)
+}
+if (RECALL.clamped) {
+  console.error(`⚠ 「${FOR_LABEL}」的发布上限是 ${DAYS} 天：--days ${RECALL.requested} 只能收紧、不能放宽（放宽会被 daily 以「太旧了」拒掉）`)
 }
 
 const GAME = FOR === 'game' ? (String(opt.game ?? '') || currentGame()) : ''
@@ -89,7 +101,7 @@ for (const kw of QUERIES) {
       // 动漫/游戏区：先把"影视解说/电视剧"这类明显不是的剔掉（它们常被搜出来蹭关键词 ✓）
       if (FOR !== 'game' && /(电影|电视剧|影视|综艺|纪录片)/.test(`${title} ${String(r.author ?? '')}`)) continue
       if (FOR === 'game') {
-        if (!text.includes(GAME)) continue
+        if (!mentionsGame(text, GAME)) continue
         if (!AI_RE.test(text)) continue
       } else {
         if (!TOPIC_RE.test(text)) continue
@@ -165,7 +177,7 @@ for (const [i, c] of cands.slice(0, N).entries()) {
   console.log(`${String(i + 1).padStart(2)}. ${c.bv}  ${c.days}天前  ${String(c.play).padStart(7)}播放  ${String(c.fav).padStart(5)}收藏  ${c.dur}  @${c.up}`)
   console.log(`    ${c.title.slice(0, 60)}`)
 }
-// 推过但还没看的也记一笔，7 天内不再原样出现（避免「候选永远只有这 6 条」）。
+// 推过但还没看的也记一笔，3 天内不再原样出现（避免「候选永远只有这 6 条」）。
 if (opt['no-remember'] !== true) {
   try {
     const next = {}
