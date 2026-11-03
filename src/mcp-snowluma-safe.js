@@ -584,8 +584,8 @@ server.tool(
 );
 
 // 文件上传要等 SnowLuma 把字节传完，超时必须按文件大小算，不能沿用文本的 15s。
-// 桥接侧公式：60 + 大小/512KiB 秒，夹在 [60, 280]；这里再 +30s 余量，让桥接的
-// 超时/错误信息先回到模型，而不是 MCP 自己先断掉。
+// 与桥接侧同一套公式（socialV2.file.uplinkKBps / maxTimeoutSeconds），这里再 +30s，
+// 让桥接的超时/错误信息先回到模型，而不是 MCP 自己先断掉。
 function uploadTimeoutMsFor(filePath) {
   let sizeBytes = 0;
   try {
@@ -593,9 +593,12 @@ function uploadTimeoutMsFor(filePath) {
     const local = /^file:/i.test(raw) ? fileURLToPath(raw) : raw;
     sizeBytes = fs.statSync(local).size;
   } catch { sizeBytes = 0; }
-  const estSeconds = Math.ceil(sizeBytes / (512 * 1024));
-  const bridgeSeconds = Math.min(280, Math.max(60, estSeconds + 20));
-  return Math.min(bridgeSeconds + 30, 600) * 1000;
+  const fileCfg = getConfig()?.socialV2?.file ?? {};
+  const uplinkKBps = Number(fileCfg.uplinkKBps) > 0 ? Number(fileCfg.uplinkKBps) : 1536;
+  const maxSeconds = Number(fileCfg.maxTimeoutSeconds) > 0 ? Number(fileCfg.maxTimeoutSeconds) : 900;
+  const estSeconds = Math.ceil(sizeBytes / (uplinkKBps * 1024));
+  const bridgeSeconds = Math.min(maxSeconds, Math.max(60, estSeconds + 60));
+  return (bridgeSeconds + 30) * 1000;
 }
 
 function fileSendErrorText(error) {

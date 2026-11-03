@@ -43,9 +43,10 @@
   → SnowLuma（`node:http`，长超时）→ QQ 服务端 → 对方 QQ。
   成功路径落 `state/bridge.log` 的 `[send-file]` 行、`state/qq-activity.log` 的 `[send-file]` 行，并 `saveSocialV2State()`。
 - **机制**：MCP 端用 `agentApiLongPoll`（`node:http`，自管计时器）绕开 undici 的 300s；
-  桥接端用新增的 `onebotCallLong`（同样 `node:http`）绕开第二道墙。两侧超时**同公式**：
-  `estSeconds = ceil(size / 512KiB)`，桥接取 `clamp(60, 280, est+20)` 秒，MCP 再 `+30s` 且上限 600s，
-  保证桥接先报错、MCP 后放弃，错误信息才具体。
+  桥接端用新增的 `onebotCallLong`（同样 `node:http`）绕开第二道墙。两侧超时**同公式**
+  （2026-11-03 调参后）：`estSeconds = ceil(size / (uplinkKBps*1024))`，
+  桥接取 `clamp(60, maxTimeoutSeconds, est+60)` 秒，MCP 再 `+30s`，保证桥接先报错、MCP 后放弃。
+  默认 `uplinkKBps=2048`（实测上行 ~4.5MB/s，取 2MB/s 保守估）、`maxTimeoutSeconds=900`。
 - **一次性发送**：一次 action 调用内含"上传 + 发文件消息"，桥接与 MCP 都**不再补发**，从结构上排除重复。
 - **爆炸半径**：新增端点只被两个新工具调用；老端点零改动；失败时回滚 `sendTimes` 并发 `noteSendFailure`。
   不碰用户数据、不碰密钥；`allowedDirs` 默认为空 = 默认拒绝（fail-closed）。
@@ -63,7 +64,8 @@
 
 1. `src/bridge.js`（6 处）
    - 默认开关表：`sendFile: false`、`sendGroupFile: false`。
-   - 新增 `cfg.socialV2.file = { allowedDirs: [], maxBytes: 100MiB, maxPathChars: 260, maxNameChars: 100, maxFolderChars: 64, ... }`。
+   - 新增 `cfg.socialV2.file = { allowedDirs: [], maxBytes: 700MiB, uplinkKBps: 2048, maxTimeoutSeconds: 900, maxPathChars: 260, maxNameChars: 100, maxFolderChars: 64, ... }`
+     （`maxBytes` 初版为 100MiB，真机验证 QQ 可收 605MB 后上调到 `734003200` = 700MiB）。
    - 新增四个助手：`onebotCallLong`（`node:http` + 自管 `setTimeout` + `timeout: 0` + 4MB 响应上限）、
      `resolveSendableFile`（绝对路径/`file://` → `realpath` → 普通文件 → 非空 → 大小上限 → 白名单前缀判定）、
      `sanitizeSendFileName`、`sanitizeSendFolder`。
@@ -97,7 +99,9 @@
   - 私聊：`POST /api/send/file {kind:'private',userId:'925868501',filePath:'D:\\QQ文件发送区\\测试文件-中文名.txt'}`
     → `200 {"ok":true,"file_id":"776cdde7…","name":"测试文件-中文名.txt","size":67}`（1145ms）。
   - 群聊：`{kind:'group',groupId:'748255607',filePath:'…\\群文件测试-中文名.txt'}` → `200 {"ok":true,"file_id":"/44843051…","size":43}`（878ms）。
-  - 日志：`state/bridge.log` = `[send-file] … upload_private_file … 超时 60s` → `成功 file_id=…`；`state/qq-activity.log` 有两条 `[send-file]`。
+  - 日志：`state/bridge.log` = `[send-file] … upload_private_file … 超时 Ns` → `成功 file_id=…`；`state/qq-activity.log` 有两条 `[send-file]`。
+  - 上调上限后复验（2026-11-03 08:25）：110MiB 私聊 → `200`，`超时 115s`（`ceil(115343360/2097152)+60`），
+    实际耗时 **28.1s**（≈4.1MB/s）；740MiB 稀疏文件被拒 `400 文件过大（775946240 字节 > 上限 734003200 字节）`。
 - 失败路径（全部实测，均为可行动报错）：
 
 | 用例 | HTTP | 用户看到 |
@@ -106,7 +110,7 @@
 | `C:/Windows/win.ini` | 403 | `该文件不在允许发送的目录内（socialV2.file.allowedDirs），已拒绝` |
 | 文件不存在 | 400 | `文件不存在或无法访问: 不存在.txt` |
 | 目录 | 400 | `filePath 不是普通文件（目录/设备文件都不允许）` |
-| 101MiB 稀疏文件 | 400 | `文件过大（105906176 字节 > 上限 104857600 字节）` |
+| 740MiB 稀疏文件 | 400 | `文件过大（775946240 字节 > 上限 734003200 字节）`（上限上调后复验） |
 | junction `逃逸\win.ini` | 403 | 同白名单拒绝（`realpath` 生效，逃不出去） |
 | `name:"bad:name.txt"` | 400 | `name 含非法字符（不能有 / \ : * ? " < > \| 或控制字符）` |
 | `name` 101 字符 | 400 | `name 过长（>100 字符）` |

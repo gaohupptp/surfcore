@@ -8793,10 +8793,13 @@ async function main() {
           if (fishBlock) { sendJson({ ok: false, ...fishBlock }, 403); return; }
           const tokenBlock = tokenGuardSendBlock(key, st, 1);
           if (tokenBlock) { sendJson({ ok: false, ...tokenBlock }, 429); return; }
-          // 估算上传耗时：按 512 KiB/s 保守算，夹在 [60, 280] 秒；上限 280s 是给
-          // 客户端 300s 墙留余量。真实耗时取决于上行带宽，低于 ~390 KiB/s 时 100MiB 会超时。
-          const estSeconds = Math.ceil(file.size / (512 * 1024));
-          const timeoutSeconds = Math.min(280, Math.max(60, estSeconds + 20));
+          // 估算上传耗时：按配置的上行带宽保守算（socialV2.file.uplinkKBps，默认 1536 KB/s），
+          // 再 +60s 建链/服务端处理缓冲，封顶 socialV2.file.maxTimeoutSeconds（默认 900s）。
+          // 实测上行约 4.5 MB/s，这里按 2 MB/s 估，给小文件留够余量的同时不会把大文件误判超时。
+          const uplinkKBps = Number(fileCfg?.uplinkKBps) > 0 ? Number(fileCfg.uplinkKBps) : 1536;
+          const maxTimeoutSeconds = Number(fileCfg?.maxTimeoutSeconds) > 0 ? Number(fileCfg.maxTimeoutSeconds) : 900;
+          const estSeconds = Math.ceil(file.size / (uplinkKBps * 1024));
+          const timeoutSeconds = Math.min(maxTimeoutSeconds, Math.max(60, estSeconds + 60));
           const now = Date.now();
           try {
             const rateLimit = sendRateLimitInfo(key, st, cfg.socialV2?.send ?? {}, 1);
